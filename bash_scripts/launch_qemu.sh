@@ -6,8 +6,20 @@ PATH_TO_EFI="$1"
 rm -rf mnt
 mkdir -p mnt/EFI/BOOT
 cp ${PATH_TO_EFI} mnt/EFI/BOOT/BOOTX64.EFI
+set +e
 qemu-system-x86_64 \
     -m 4G \
     -bios third_party/OVMF/RELEASEX64_OVMF.fd \
     -drive format=raw,file=fat:rw:mnt \
     -device isa-debug-exit,iobase=0xf4,iosize=0x01
+RET_CODE=$?
+set -e
+if [ $RET_CODE -eq 0 ]; then
+    exit 0
+elif [ $RET_CODE -eq 3 ]; then
+    printf "\nPASS\n"
+    exit 0
+else 
+    printf "\nFAIL: QEMU returned "$RET_CODE"\n"
+    exit 1
+fi
