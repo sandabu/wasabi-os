@@ -36,7 +36,14 @@ fn draw_point<T: Bitmap>(buf: &mut T, color: u32, x: i64, y: i64) -> Result<()> 
     Ok(())
 }
 
-pub fn fill_rect<T: Bitmap>(buf: &mut T, color: u32, px: i64, py: i64, w: i64, h: i64) -> Result<()> {
+pub fn fill_rect<T: Bitmap>(
+    buf: &mut T,
+    color: u32,
+    px: i64,
+    py: i64,
+    w: i64,
+    h: i64,
+) -> Result<()> {
     if !buf.is_in_x_range(px)
         || !buf.is_in_y_range(py)
         || !buf.is_in_x_range(px + w - 1)
@@ -57,23 +64,16 @@ pub fn fill_rect<T: Bitmap>(buf: &mut T, color: u32, px: i64, py: i64, w: i64, h
 fn calc_slop_point(da: i64, db: i64, ia: i64) -> Option<i64> {
     if da < db {
         None
-    }else if da == 0 {
+    } else if da == 0 {
         Some(0)
-    }else if (0..=da).contains(&ia) {
+    } else if (0..=da).contains(&ia) {
         Some((2 * db * ia + da) / da / 2)
-    }else {
+    } else {
         None
     }
 }
 
-fn draw_line<T : Bitmap>(
-    buf: &mut T,
-    color: u32,
-    x0: i64,
-    y0: i64,
-    x1: i64,
-    y1: i64
-) -> Result<()> {
+fn draw_line<T: Bitmap>(buf: &mut T, color: u32, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<()> {
     if !buf.is_in_x_range(x0)
         || !buf.is_in_y_range(y0)
         || !buf.is_in_x_range(x1)
@@ -87,15 +87,11 @@ fn draw_line<T : Bitmap>(
     let sy = (y1 - y0).signum();
 
     if dx >= dy {
-        for (rx, ry) in (0..dx)
-            .flat_map(|rx| calc_slop_point(dx, dy, rx).map(|ry| (rx, ry)))
-        {
+        for (rx, ry) in (0..dx).flat_map(|rx| calc_slop_point(dx, dy, rx).map(|ry| (rx, ry))) {
             draw_point(buf, color, x0 + rx * sx, y0 + ry * sy)?;
         }
     } else {
-        for (ry, rx) in (0..dy)
-            .flat_map(|ry| calc_slop_point(dy, dx, ry).map(|rx| (ry, rx)))
-        {
+        for (ry, rx) in (0..dy).flat_map(|ry| calc_slop_point(dy, dx, ry).map(|rx| (ry, rx))) {
             draw_point(buf, color, x0 + rx * sx, y0 + ry * sy)?;
         }
     }
@@ -167,5 +163,4 @@ pub fn draw_test_pattern<T: Bitmap>(buf: &mut T) {
 
     draw_str_fg(buf, left, h * colors.len() as i64, 0x00ff00, "0123456789");
     draw_str_fg(buf, left, h * colors.len() as i64 + 16, 0x00ff00, "ABCDEF");
-
 }

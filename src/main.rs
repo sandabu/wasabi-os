@@ -34,7 +34,9 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
         writeln!(w, "i = {i}").unwrap();
     }
     let mut memory_map = MemoryMapHolder::new();
-    let status = efi_system_table.boot_services().get_memory_map(&mut memory_map);
+    let status = efi_system_table
+        .boot_services()
+        .get_memory_map(&mut memory_map);
     writeln!(w, "{status:?}").unwrap();
     let mut total_memory_pages = 0;
     for e in memory_map.iter() {
@@ -48,12 +50,9 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     writeln!(
         w,
         "Total: {total_memory_pages} pages = {total_memory_size_mib} MiB"
-    ).unwrap();
-    exit_from_efi_boot_services(
-        image_handle,
-        efi_system_table,
-        &mut memory_map
-    );
+    )
+    .unwrap();
+    exit_from_efi_boot_services(image_handle, efi_system_table, &mut memory_map);
     writeln!(w, "Hello, Non-UEFI world!").unwrap();
     loop {
         hlt();
