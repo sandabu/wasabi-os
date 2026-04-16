@@ -21,6 +21,20 @@ pub fn round_up_to_nearest_pow2(v: usize) -> Result<usize> {
         .ok_or("Out of range")
 }
 
+#[test_case]
+fn round_up_to_nearest_pow2_tests() {
+    assert_eq!(round_up_to_nearest_pow2(0), Err("Out of range"));
+    assert_eq!(round_up_to_nearest_pow2(1), Ok(1));
+    assert_eq!(round_up_to_nearest_pow2(2), Ok(2));
+    assert_eq!(round_up_to_nearest_pow2(3), Ok(4));
+    assert_eq!(round_up_to_nearest_pow2(4), Ok(4));
+    assert_eq!(round_up_to_nearest_pow2(5), Ok(8));
+    assert_eq!(round_up_to_nearest_pow2(6), Ok(8));
+    assert_eq!(round_up_to_nearest_pow2(7), Ok(8));
+    assert_eq!(round_up_to_nearest_pow2(8), Ok(8));
+    assert_eq!(round_up_to_nearest_pow2(9), Ok(16));
+}
+
 struct Header {
     next_header: Option<Box<Header>>,
     size: usize,
@@ -175,4 +189,50 @@ impl FirstFitAllocator {
         let mut header = self.first_header.borrow_mut();
         header.as_mut().unwrap().next_header = prev_last;
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloc::vec;
+
+    #[test_case]
+    fn malloc_iterate_free_and_alloc() {
+        use alloc::vec::Vec;
+        for i in 0..1000 {
+            let mut vec = Vec::new();
+            vec.resize(i, 10);
+        }
+    }
+
+    #[test_case]
+    fn malloc_align() {
+        let mut pointers = [null_mut::<u8>(); 100];
+        for align in [1,2,4,8,16,32,4096] {
+            for e in pointers.iter_mut() {
+                *e = ALLOCATOR.alloc_with_options(
+                    Layout::from_size_align(1234, align)
+                    .expect("Failed to create Layout"),
+                );
+                assert!(*e as usize != 0);
+                assert!((*e as usize) & align == 0);
+            }
+        }
+    }
+
+    #[test_case]
+    fn malloc_align_random_order() {
+        for align in [32,4096,8,4,16,2,1] {
+            let mut pointers = [null_mut::<u8>(); 100];
+            for e in pointers.iter_mut() {
+                *e = ALLOCATOR.alloc_with_options(
+                    Layout::from_size_align(1234, align)
+                    .expect("Failed to create Layout"),
+                );
+                assert!(*e as usize != 0);
+                assert!((*e as usize) & align == 0);
+            }
+        }
+    }
+
 }
