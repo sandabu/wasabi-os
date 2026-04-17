@@ -72,21 +72,23 @@ impl Header {
         let header = addr.sub(HEADER_SIZE) as *mut Header;
         Box::from_raw(header)
     }
-    fn provide(&mut self, size: usize, align:usize) -> Option<*mut u8> {
+    fn provide(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         let size = max(round_up_to_nearest_pow2(size).ok()?, HEADER_SIZE);
         let align = max(align, HEADER_SIZE);
         if self.is_allocated() || !self.can_provide(size, align) {
             None
-        }else {
+        } else {
             let mut size_used = 0;
             let allocated_addr = (self.end_addr() - size) & !(align - 1);
-            let mut header_for_allocated = unsafe { Self::new_from_addr(allocated_addr - HEADER_SIZE) };
+            let mut header_for_allocated =
+                unsafe { Self::new_from_addr(allocated_addr - HEADER_SIZE) };
             header_for_allocated.is_allocated = true;
             header_for_allocated.size = size + HEADER_SIZE;
             size_used += header_for_allocated.size;
             header_for_allocated.next_header = self.next_header.take();
             if header_for_allocated.end_addr() != self.end_addr() {
-                let mut header_for_padding = unsafe { Self::new_from_addr(header_for_allocated.end_addr()) };
+                let mut header_for_padding =
+                    unsafe { Self::new_from_addr(header_for_allocated.end_addr()) };
                 header_for_padding.is_allocated = false;
                 header_for_padding.size = self.end_addr() - header_for_allocated.end_addr();
                 size_used += header_for_padding.size;
@@ -194,7 +196,6 @@ impl FirstFitAllocator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloc::vec;
 
     #[test_case]
     fn malloc_iterate_free_and_alloc() {
@@ -208,31 +209,28 @@ mod test {
     #[test_case]
     fn malloc_align() {
         let mut pointers = [null_mut::<u8>(); 100];
-        for align in [1,2,4,8,16,32,4096] {
+        for align in [1, 2, 4, 8, 16, 32, 4096] {
             for e in pointers.iter_mut() {
                 *e = ALLOCATOR.alloc_with_options(
-                    Layout::from_size_align(1234, align)
-                    .expect("Failed to create Layout"),
+                    Layout::from_size_align(1234, align).expect("Failed to create Layout"),
                 );
                 assert!(*e as usize != 0);
-                assert!((*e as usize) & align == 0);
+                assert!((*e as usize) % align == 0);
             }
         }
     }
 
     #[test_case]
     fn malloc_align_random_order() {
-        for align in [32,4096,8,4,16,2,1] {
+        for align in [32, 4096, 8, 4, 16, 2, 1] {
             let mut pointers = [null_mut::<u8>(); 100];
             for e in pointers.iter_mut() {
                 *e = ALLOCATOR.alloc_with_options(
-                    Layout::from_size_align(1234, align)
-                    .expect("Failed to create Layout"),
+                    Layout::from_size_align(1234, align).expect("Failed to create Layout"),
                 );
                 assert!(*e as usize != 0);
-                assert!((*e as usize) & align == 0);
+                assert!((*e as usize) % align == 0);
             }
         }
     }
-
 }

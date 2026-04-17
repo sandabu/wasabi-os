@@ -31,7 +31,7 @@ impl SerialPort {
         write_io_port_u8(self.base + 4, 0x0B);
     }
     pub fn send_char(&self, c: char) {
-        while(read_io_port_u8(self.base + 5) & 0x20) == 0 {
+        while (read_io_port_u8(self.base + 5) & 0x20) == 0 {
             busy_loop_hint();
         }
         write_io_port_u8(self.base, c as u8);
