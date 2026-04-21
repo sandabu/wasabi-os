@@ -32,7 +32,7 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     info!("info!");
     warn!("warn!");
     error!("error!");
-    hexdump(efi_system_table);
+    // hexdump(efi_system_table);
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
     let (vw, vh) = (vram.width(), vram.height());
     fill_rect(&mut vram, 0x000000, 0, 0, vw, vh).expect("fill_rect failed");
@@ -54,6 +54,16 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     )
     .unwrap();
     writeln!(w, "Hello, Non-UEFI world!").unwrap();
+    let cr3 = wasabi::x86::read_cr3();
+    writeln!(w, "cr3 = {cr3:#p}");
+    let t = Some(unsafe { &*cr3 });
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
     loop {
         hlt();
     }
