@@ -370,6 +370,7 @@ inthandler_common:
     push r8
     push rdi
     push rsi
+    push rbp
     push rbx
     push rdx
     push rax
@@ -394,6 +395,7 @@ inthandler_common:
     pop rax
     pop rdx
     pop rbx
+    pop rbp
     pop rsi
     pop rdi
     pop r8
