@@ -11,6 +11,8 @@ use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
 use wasabi::info;
 use wasabi::init::init_basic_runtime;
+use wasabi::init::init_paging;
+use wasabi::print::hexdump;
 use wasabi::println;
 use wasabi::qemu::exit_qemu;
 use wasabi::qemu::QemuExitCode;
@@ -39,7 +41,7 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     info!("info!");
     warn!("warn!");
     error!("error!");
-    // hexdump(efi_system_table);
+    hexdump(efi_system_table);
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
     let (vw, vh) = (vram.width(), vram.height());
     fill_rect(&mut vram, 0x000000, 0, 0, vw, vh).expect("fill_rect failed");
@@ -76,6 +78,8 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     info!("Exceptions initialized!");
     trigger_debug_interrupt();
     info!("Execution continued");
+    init_paging(&memory_map);
+    info!("Now we are using our own page tables!");
     loop {
         hlt();
     }
