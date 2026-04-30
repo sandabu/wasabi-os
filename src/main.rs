@@ -15,8 +15,8 @@ use wasabi::println;
 use wasabi::qemu::exit_qemu;
 use wasabi::qemu::QemuExitCode;
 use wasabi::uefi::init_vram;
-use wasabi::uefi::EfiHandle;
 use wasabi::uefi::locate_loaded_image_protocol;
+use wasabi::uefi::EfiHandle;
 use wasabi::uefi::EfiMemoryType;
 use wasabi::uefi::EfiSystemTable;
 use wasabi::uefi::VramTextWriter;
@@ -32,8 +32,7 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     println!("Booting WasabiOS...\n");
     println!("image_handle:{:#018X}\n", image_handle);
     println!("efi_system_table:{:#p}\n", efi_system_table);
-    let loaded_image_protocol = 
-        locate_loaded_image_protocol(image_handle, efi_system_table)
+    let loaded_image_protocol = locate_loaded_image_protocol(image_handle, efi_system_table)
         .expect("Failed to get LoadedImageProtocol");
     println!("image_base {:018X}", loaded_image_protocol.image_base);
     println!("image_size {:018X}", loaded_image_protocol.image_size);
@@ -76,6 +75,7 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     let (_gdt, _idt) = init_exceptions();
     info!("Exceptions initialized!");
     trigger_debug_interrupt();
+    info!("Execution continued");
     loop {
         hlt();
     }
