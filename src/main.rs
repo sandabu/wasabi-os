@@ -24,7 +24,9 @@ use wasabi::uefi::EfiSystemTable;
 use wasabi::uefi::VramTextWriter;
 use wasabi::warn;
 
+use wasabi::x86::flush_tlb;
 use wasabi::x86::init_exceptions;
+use wasabi::x86::read_cr3;
 use wasabi::x86::trigger_debug_interrupt;
 
 use wasabi::x86::hlt;
@@ -80,6 +82,15 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     info!("Execution continued");
     init_paging(&memory_map);
     info!("Now we are using our own page tables!");
+
+    let page_table = read_cr3();
+    unsafe {
+        (*page_table)
+            .create_mapping(0, 4096, 0, wasabi::x86::PageAttr::NotPresent)
+            .expect("Failed to create page mapping");
+    }
+    flush_tlb();
+
     loop {
         hlt();
     }
