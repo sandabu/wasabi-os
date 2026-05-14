@@ -51,6 +51,9 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     fill_rect(&mut vram, 0x000000, 0, 0, vw, vh).expect("fill_rect failed");
     draw_test_pattern(&mut vram);
     let mut w = VramTextWriter::new(&mut vram);
+    let acpi = efi_system_table
+        .acpi_table()
+        .expect("Failed to find ACPI table");
     let memory_map = init_basic_runtime(image_handle, efi_system_table);
     let mut total_memory_pages = 0;
     for e in memory_map.iter() {
@@ -93,6 +96,11 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     }
     flush_tlb();
 
+    let hpet = acpi.hpet().expect("Failed to find HPET table");
+    let hpet = hpet
+        .base_address()
+        .expect("HPET table has invalid base address");
+    info!("HPET base address: {hpet:#018X}");
     let task1 = Task::new(async {
         for i in 100..=103 {
             info!("{i}");
