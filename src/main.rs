@@ -4,18 +4,18 @@
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use core::time::Duration;
 use core::writeln;
 use wasabi::error;
-use wasabi::executor::yield_execution;
 use wasabi::executor::Task;
-use wasabi::graphics::draw_test_pattern;
-use wasabi::graphics::fill_rect;
-use wasabi::graphics::Bitmap;
+use wasabi::executor::TimetoutFuture;
+use wasabi::graphics::BitmapTextWriter;
 use wasabi::hpet::global_timestamp;
-use wasabi::hpet::set_global_hpet;
-use wasabi::hpet::Hpet;
 use wasabi::info;
+use wasabi::init::init_allocator;
 use wasabi::init::init_basic_runtime;
+use wasabi::init::init_display;
+use wasabi::init::init_hpet;
 use wasabi::init::init_paging;
 use wasabi::print::hexdump;
 use wasabi::println;
@@ -24,15 +24,10 @@ use wasabi::qemu::QemuExitCode;
 use wasabi::uefi::init_vram;
 use wasabi::uefi::locate_loaded_image_protocol;
 use wasabi::uefi::EfiHandle;
-use wasabi::uefi::EfiMemoryType;
 use wasabi::uefi::EfiSystemTable;
-use wasabi::uefi::VramTextWriter;
 use wasabi::warn;
 
-use wasabi::x86::flush_tlb;
 use wasabi::x86::init_exceptions;
-use wasabi::x86::read_cr3;
-use wasabi::x86::trigger_debug_interrupt;
 
 use wasabi::executor::Executor;
 
@@ -50,74 +45,31 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     error!("error!");
     hexdump(efi_system_table);
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
-    let (vw, vh) = (vram.width(), vram.height());
-    fill_rect(&mut vram, 0x000000, 0, 0, vw, vh).expect("fill_rect failed");
-    draw_test_pattern(&mut vram);
-    let mut w = VramTextWriter::new(&mut vram);
+    init_display(&mut vram);
+    let mut w = BitmapTextWriter::new(&mut vram);
     let acpi = efi_system_table
         .acpi_table()
         .expect("Failed to find ACPI table");
     let memory_map = init_basic_runtime(image_handle, efi_system_table);
-    let mut total_memory_pages = 0;
-    for e in memory_map.iter() {
-        if e.memory_type() != EfiMemoryType::CONVENTIONAL_MEMORY {
-            continue;
-        }
-        total_memory_pages += e.number_of_pages();
-        // writeln!(w, "{e:?}").unwrap();
-    }
-    let total_memory_size_mib = total_memory_pages * 4096 / 1024 / 1024;
-    writeln!(
-        w,
-        "Total: {total_memory_pages} pages = {total_memory_size_mib} MiB"
-    )
-    .unwrap();
+
     writeln!(w, "Hello, Non-UEFI world!").unwrap();
-    let cr3 = wasabi::x86::read_cr3();
-    writeln!(w, "cr3 = {cr3:#p}").unwrap();
-    let t = Some(unsafe { &*cr3 });
-    println!("{t:?}");
-    let t = t.and_then(|t| t.next_level(0));
-    println!("{t:?}");
-    let t = t.and_then(|t| t.next_level(0));
-    println!("{t:?}");
-    let t = t.and_then(|t| t.next_level(0));
-    println!("{t:?}");
+    init_allocator(&memory_map);
 
     let (_gdt, _idt) = init_exceptions();
-    info!("Exceptions initialized!");
-    trigger_debug_interrupt();
-    info!("Execution continued");
     init_paging(&memory_map);
-    info!("Now we are using our own page tables!");
-
-    let page_table = read_cr3();
-    unsafe {
-        (*page_table)
-            .create_mapping(0, 4096, 0, wasabi::x86::PageAttr::NotPresent)
-            .expect("Failed to create page mapping");
-    }
-    flush_tlb();
-
-    let hpet = acpi.hpet().expect("Failed to find HPET table");
-    let hpet = hpet
-        .base_address()
-        .expect("HPET table has invalid base address");
-    info!("HPET base address: {hpet:#p}");
-    let hpet = Hpet::new(hpet);
-    set_global_hpet(hpet);
+    init_hpet(acpi);
     let t0 = global_timestamp();
     let task1 = Task::new(async move {
         for i in 100..=103 {
             info!("{i} hpet.maincounter = {:?}", global_timestamp() - t0);
-            yield_execution().await;
+            TimetoutFuture::new(Duration::from_secs(1)).await;
         }
         Ok(())
     });
     let task2 = Task::new(async move {
         for i in 200..=203 {
             info!("{i} hpet.maincounter = {:?}", global_timestamp() - t0);
-            yield_execution().await;
+            TimetoutFuture::new(Duration::from_secs(1)).await;
         }
         Ok(())
     });
