@@ -299,13 +299,13 @@ impl Bitmap for VramBufferInfo {
         4
     }
     fn pixels_per_line(&self) -> i64 {
-        self.pixels_per_line as i64
+        self.pixels_per_line
     }
     fn width(&self) -> i64 {
-        self.width as i64
+        self.width
     }
     fn height(&self) -> i64 {
-        self.height as i64
+        self.height
     }
     fn buf_mut(&mut self) -> *mut u8 {
         self.buf
