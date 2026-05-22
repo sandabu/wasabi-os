@@ -6,6 +6,7 @@ use crate::graphics::draw_test_pattern;
 use crate::graphics::fill_rect;
 use crate::graphics::Bitmap;
 use crate::info;
+use crate::pci::Pci;
 use crate::uefi::exit_from_efi_boot_services;
 use crate::uefi::EfiHandle;
 use crate::uefi::EfiMemoryType;
@@ -95,5 +96,7 @@ pub fn init_pci(acpi: &AcpiRsdpStruct) {
                 info!("{}", e)
             }
         }
+        let pci = Pci::new(mcfg);
+        pci.probe_devices();
     }
 }
