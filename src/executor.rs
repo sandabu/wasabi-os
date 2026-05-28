@@ -1,6 +1,7 @@
 extern crate alloc;
 use crate::hpet::global_timestamp;
 use crate::info;
+use crate::mutex::Mutex;
 use crate::result::Result;
 use crate::x86::busy_loop_hint;
 use alloc::boxed::Box;
@@ -21,7 +22,7 @@ use core::time::Duration;
 
 use alloc::collections::VecDeque;
 
-pub struct Task<T> {
+struct Task<T> {
     future: Pin<Box<dyn Future<Output = Result<T>>>>,
     created_at_file: &'static str,
     created_at_line: u32,
@@ -29,7 +30,7 @@ pub struct Task<T> {
 
 impl<T> Task<T> {
     #[track_caller]
-    pub fn new(future: impl Future<Output = Result<T>> + 'static) -> Task<T> {
+    fn new(future: impl Future<Output = Result<T>> + 'static) -> Task<T> {
         Task {
             future: Box::pin(future),
             created_at_file: Location::caller().file(),
@@ -56,7 +57,7 @@ fn no_op_raw_waker() -> RawWaker {
     RawWaker::new(null::<()>(), vtable)
 }
 
-pub fn no_op_waker() -> Waker {
+fn no_op_waker() -> Waker {
     unsafe { Waker::from_raw(no_op_raw_waker()) }
 }
 
@@ -78,7 +79,7 @@ pub struct Executor {
     task_queue: Option<VecDeque<Task<()>>>,
 }
 impl Executor {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self { task_queue: None }
     }
     fn task_queue(&mut self) -> &mut VecDeque<Task<()>> {
@@ -87,14 +88,14 @@ impl Executor {
         }
         self.task_queue.as_mut().unwrap()
     }
-    pub fn enqueue(&mut self, task: Task<()>) {
+    fn enqueue(&mut self, task: Task<()>) {
         self.task_queue().push_back(task);
     }
-    pub fn run(mut executor: Self) -> ! {
+    fn run(executor: &Mutex<Option<Self>>) -> ! {
         info!("Executor starts running...");
         loop {
-            let task = executor.task_queue().pop_front();
-            if let Some(mut task) = task {
+            let task = executor.lock().as_mut().map(|e| e.task_queue().pop_front());
+            if let Some(Some(mut task)) = task {
                 let waker = no_op_waker();
                 let mut context = Context::from_waker(&waker);
                 match task.poll(&mut context) {
@@ -102,7 +103,9 @@ impl Executor {
                         info!("Task completed: {:?}: {:?}", task, result);
                     }
                     Poll::Pending => {
-                        executor.task_queue().push_back(task);
+                        if let Some(e) = executor.lock().as_mut() {
+                            e.task_queue().push_back(task);
+                        }
                     }
                 }
             }
@@ -116,7 +119,7 @@ impl Default for Executor {
 }
 
 #[derive(Default)]
-pub struct Yield {
+struct Yield {
     polled: AtomicBool,
 }
 impl Future for Yield {
@@ -134,11 +137,11 @@ pub async fn yield_execution() {
     Yield::default().await
 }
 
-pub struct TimetoutFuture {
+struct TimetoutFuture {
     time_out: Duration,
 }
 impl TimetoutFuture {
-    pub fn new(duration: Duration) -> Self {
+    fn new(duration: Duration) -> Self {
         Self {
             time_out: global_timestamp() + duration,
         }
@@ -153,4 +156,20 @@ impl Future for TimetoutFuture {
             Poll::Pending
         }
     }
+}
+
+pub async fn sleep(duration: Duration) {
+    TimetoutFuture::new(duration).await
+}
+
+static GLOBAL_EXECUTOR: Mutex<Option<Executor>> = Mutex::new(None);
+#[track_caller]
+
+pub fn spawn_global(future: impl Future<Output = Result<()>> + 'static) {
+    let task = Task::new(future);
+    GLOBAL_EXECUTOR.lock().get_or_insert_default().enqueue(task);
+}
+pub fn start_global_executor() -> ! {
+    info!("Starting global executor...");
+    Executor::run(&GLOBAL_EXECUTOR)
 }

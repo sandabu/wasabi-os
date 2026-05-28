@@ -6,6 +6,7 @@
 #![feature(const_location_fields)]
 #![test_runner(crate::test_runner::test_runner)]
 #![reexport_test_harness_main = "run_unit_tests"]
+#![feature(option_get_or_insert_default)]
 #![no_main]
 pub mod acpi;
 pub mod allocator;
