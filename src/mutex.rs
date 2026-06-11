@@ -101,7 +101,7 @@ impl<T: Sized> Mutex<T> {
             self.taker_line_num.load(Ordering::SeqCst)
         );
     }
-    pub fn under_locked<R: Sized>(&self, f: &dyn Fn(*mut T) -> Result<R>) -> Result<R> {
+    pub fn under_locked<R: Sized>(&self, f: &dyn Fn(&mut T) -> Result<R>) -> Result<R> {
         let mut locked = self.lock();
         f(&mut *locked)
     }
