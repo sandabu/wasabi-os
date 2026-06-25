@@ -228,6 +228,7 @@ impl CapabilityRegisters {
     }
 }
 
+#[repr(C, align(64))]
 struct RawDeviceContextBaseAddressArray {
     scratchpad_table_ptr: *const *const u8,
     context: [u64; 255],
@@ -442,11 +443,12 @@ struct DeviceContext {
     ep_ctx: [EndpointContext; 2 * 15 + 1],
     _pinned: PhantomPinned,
 }
+const _: () = assert!(size_of::<DeviceContext>() == 0x400);
 impl DeviceContext {
     fn set_port_speed(&mut self, mode: UsbMode) -> Result<()> {
         if mode.psi() < 16u32 {
             self.slot_ctx[0] &= !(0xF << 20);
-            self.slot_ctx[0] |= mode.psi() << 20;
+            self.slot_ctx[0] |= (mode.psi()) << 20;
             Ok(())
         }else {
             Err("psi out of range")
