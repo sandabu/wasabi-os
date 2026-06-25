@@ -165,21 +165,20 @@ impl PciXhciDriver {
         port: usize,
         slot: u8,
     ) -> Result<()> {
-        let output_context: IoBox<OutputContext> = IoBox::new();
+        let output_context = Box::pin(OutputContext::default());
         xhc.set_output_context_for_slot(slot, output_context);
-
         let mut input_ctrl_ctx = InputControlContext::default();
         input_ctrl_ctx.add_context(0)?;
         input_ctrl_ctx.add_context(1)?;
-        let mut input_context: IoBox<InputContext> = IoBox::new();
-        let mut input_context_ref = unsafe { Pin::new_unchecked(input_context.get_unchecked_mut()) };
-        input_context_ref.set_input_ctrl_ctx(input_ctrl_ctx)?;
-        input_context_ref.set_root_hub_port_number(port)?;
-        input_context_ref.set_last_valid_dci(1)?;
+        let mut input_context = Box::pin(InputContext::default());
+        input_context.as_mut().set_input_ctrl_ctx(input_ctrl_ctx)?;
+
+        input_context.as_mut().set_root_hub_port_number(port)?;
+        input_context.as_mut().set_last_valid_dci(1)?;
         let portsc = xhc.regs.portsc.get(port).ok_or("PORTSC was invalid")?;
-        input_context_ref.set_port_speed(portsc.port_speed())?;
+        input_context.as_mut().set_port_speed(portsc.port_speed())?;
         let ctrl_ep_ring = CommandRing::default();
-        input_context_ref.set_ep_ctx(
+        input_context.as_mut().set_ep_ctx(
             1,
             EndpointContext::new_control_endpoint(
                 portsc.max_packet_size()?,
@@ -571,7 +570,11 @@ impl Controller {
     fn notify_xhc(&self) {
         self.regs.doorbell_regs[0].notify(0, 0);
     }
-    fn set_output_context_for_slot(&self, slot: u8, output_context: IoBox<OutputContext>) {
+    fn set_output_context_for_slot(
+        &self,
+        slot: u8,
+        output_context: Pin<Box<OutputContext>>
+    ) {
         self.device_context_base_array
             .lock()
             .set_output_context(slot, output_context);
