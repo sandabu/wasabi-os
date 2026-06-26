@@ -12,6 +12,7 @@ use crate::pci::BarMem64;
 use crate::pci::BusDeviceFunction;
 use crate::pci::Pci;
 use crate::pci::VendorDeviceId;
+use crate::pin::IntoPinnedMutableSlice;
 use crate::result::Result;
 use crate::volatile::Volatile;
 use crate::x86::busy_loop_hint;
@@ -25,6 +26,7 @@ use core::cmp::max;
 use core::future::Future;
 use core::marker::PhantomPinned;
 use core::mem::size_of;
+use core::mem::transmute;
 use core::mem::MaybeUninit;
 use core::ops::Range;
 use core::pin::Pin;
@@ -66,24 +68,20 @@ impl PciXhciDriver {
         VDI_LIST.contains(&vp)
     }
     fn setup_xhc_registers(bar0: &BarMem64) -> Result<XhcRegisters> {
-        let cap_regs =
-            unsafe { Mmio::from_raw(bar0.addr() as *mut CapabilityRegisters) };
+        let cap_regs = unsafe { Mmio::from_raw(bar0.addr() as *mut CapabilityRegisters) };
         let op_regs = unsafe {
-            Mmio::from_raw(bar0.addr().add(cap_regs.as_ref().caplength())
-                as *mut OperationalRegisters)
+            Mmio::from_raw(
+                bar0.addr().add(cap_regs.as_ref().caplength()) as *mut OperationalRegisters
+            )
         };
         let rt_regs = unsafe {
-            Mmio::from_raw(bar0.addr().add(cap_regs.as_ref().rtsoff())
-                as *mut RuntimeRegisters)
+            Mmio::from_raw(bar0.addr().add(cap_regs.as_ref().rtsoff()) as *mut RuntimeRegisters)
         };
         let portsc = PortSc::new(bar0, cap_regs.as_ref());
         let num_slots = cap_regs.as_ref().num_of_ports();
         let mut doorbell_regs = Vec::new();
         for i in 0..=num_slots {
-            let ptr = unsafe {
-                bar0.addr().add(cap_regs.as_ref().dboff()).add(4 * i)
-                    as *mut u32
-            };
+            let ptr = unsafe { bar0.addr().add(cap_regs.as_ref().dboff()).add(4 * i) as *mut u32 };
             doorbell_regs.push(Rc::new(Doorbell::new(ptr)))
         }
         // number of doorbells will be 1 + num_slots since doorbell[] is for the
@@ -144,8 +142,11 @@ impl PciXhciDriver {
             info!("xhci: port {port} is connected.");
             let slot = Self::init_port(&xhc, port).await?;
             info!("slot {slot} is assigned for port {port}");
-            Self::address_device(&xhc, port, slot).await?;
+            let mut ctrl_ep_ring = Self::address_device(&xhc, port, slot).await?;
             info!("AddressDeviceCommand succeeded");
+            let device_descriptor =
+                Self::request_device_descriptor(&xhc, slot, &mut ctrl_ep_ring).await?;
+            info!("Got a DeviceDescriptor: {device_descriptor:?}")
         }
 
         Ok(())
@@ -166,11 +167,7 @@ impl PciXhciDriver {
             .slot_id();
         Ok(slot)
     }
-    async fn address_device(
-        xhc: &Rc<Controller>,
-        port: usize,
-        slot: u8,
-    ) -> Result<()> {
+    async fn address_device(xhc: &Rc<Controller>, port: usize, slot: u8) -> Result<CommandRing> {
         // Setup an input context and send AddressDevice command.
         // 4.3.3 Device Slot Initialization
         let output_context = Box::pin(OutputContext::default());
@@ -196,10 +193,26 @@ impl PciXhciDriver {
             )?,
         )?;
         // 8. Issue an Address Device Command for the Device Slot
-        let cmd =
-            GenericTrbEntry::cmd_address_device(input_context.as_ref(), slot);
+        let cmd = GenericTrbEntry::cmd_address_device(input_context.as_ref(), slot);
         xhc.send_command(cmd).await?.cmd_result_ok()?;
-        Ok(())
+        Ok(ctrl_ep_ring)
+    }
+    async fn request_device_descriptor(
+        xhc: &Rc<Controller>,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+    ) -> Result<UsbDeviceDescriptor> {
+        let mut desc = Box::pin(UsbDeviceDescriptor::default());
+        xhc.request_descriptor(
+            slot,
+            ctrl_ep_ring,
+            UsbDescriptorType::Device,
+            0,
+            0,
+            desc.as_mut().as_mut_slice(),
+        )
+        .await?;
+        Ok(*desc)
     }
 }
 
@@ -308,10 +321,7 @@ impl OperationalRegisters {
             ring.ring_phys_addr() | 1, /* Consumer Ring Cycle State */
         )
     }
-    fn set_dcbaa_ptr(
-        &mut self,
-        dcbaa: &mut DeviceContextBaseAddressArray,
-    ) -> Result<()> {
+    fn set_dcbaa_ptr(&mut self, dcbaa: &mut DeviceContextBaseAddressArray) -> Result<()> {
         self.dcbaap.write(dcbaa.inner_mut_ptr());
         Ok(())
     }
@@ -368,10 +378,7 @@ struct ScratchpadBuffers {
     _bufs: Vec<Pin<Box<[u8]>>>,
 }
 impl ScratchpadBuffers {
-    fn alloc(
-        cap_regs: &CapabilityRegisters,
-        op_regs: &OperationalRegisters,
-    ) -> Result<Self> {
+    fn alloc(cap_regs: &CapabilityRegisters, op_regs: &OperationalRegisters) -> Result<Self> {
         let page_size = op_regs.page_size()?;
         info!("xhci: page_size = {page_size}");
         let num_scratchpad_bufs = cap_regs.num_scratchpad_bufs();
@@ -379,15 +386,10 @@ impl ScratchpadBuffers {
 
         let num_scratchpad_bufs = max(cap_regs.num_scratchpad_bufs(), 1);
         let table = ALLOCATOR.alloc_with_options(
-            Layout::from_size_align(
-                size_of::<usize>() * num_scratchpad_bufs,
-                page_size,
-            )
-            .map_err(|_| "could not allocate scratchpad buffer table")?,
+            Layout::from_size_align(size_of::<usize>() * num_scratchpad_bufs, page_size)
+                .map_err(|_| "could not allocate scratchpad buffer table")?,
         );
-        let table = unsafe {
-            slice::from_raw_parts(table as *mut *const u8, num_scratchpad_bufs)
-        };
+        let table = unsafe { slice::from_raw_parts(table as *mut *const u8, num_scratchpad_bufs) };
         let mut table = Pin::new(Box::<[*const u8]>::from(table));
         let mut bufs = Vec::new();
         for sb in table.iter_mut() {
@@ -395,8 +397,7 @@ impl ScratchpadBuffers {
                 Layout::from_size_align(page_size, page_size)
                     .map_err(|_| "could not allocated a scratchpad buffer")?,
             );
-            let buf =
-                unsafe { slice::from_raw_parts(buf as *const u8, page_size) };
+            let buf = unsafe { slice::from_raw_parts(buf as *const u8, page_size) };
             let buf = Pin::new(Box::<[u8]>::from(buf));
             *sb = buf.as_ref().as_ptr();
             bufs.push(buf);
@@ -419,10 +420,7 @@ impl EndpointContext {
     fn new() -> Self {
         unsafe { MaybeUninit::zeroed().assume_init() }
     }
-    fn new_control_endpoint(
-        max_packet_size: u16,
-        tr_dequeue_ptr: u64,
-    ) -> Result<Self> {
+    fn new_control_endpoint(max_packet_size: u16, tr_dequeue_ptr: u64) -> Result<Self> {
         let mut ep = Self::new();
         ep.set_ep_type(EndpointType::Control)?;
         ep.set_dequeue_cycle_state(true)?;
@@ -542,11 +540,7 @@ impl DeviceContextBaseAddressArray {
     fn inner_mut_ptr(&mut self) -> *const RawDeviceContextBaseAddressArray {
         self.inner.as_ref().get_ref() as *const RawDeviceContextBaseAddressArray
     }
-    fn set_output_context(
-        &mut self,
-        slot: u8,
-        output_context: Pin<Box<OutputContext>>,
-    ) {
+    fn set_output_context(&mut self, slot: u8, output_context: Pin<Box<OutputContext>>) {
         let ctx_idx = slot as usize - 1;
         // Own the output context here
         self.context[ctx_idx] = Some(output_context);
@@ -573,12 +567,9 @@ impl Controller {
         unsafe {
             regs.op_regs.get_unchecked_mut().reset_xhc();
         }
-        let scratchpad_buffers = ScratchpadBuffers::alloc(
-            regs.cap_regs.as_ref(),
-            regs.op_regs.as_ref(),
-        )?;
-        let device_context_base_array =
-            DeviceContextBaseAddressArray::new(scratchpad_buffers);
+        let scratchpad_buffers =
+            ScratchpadBuffers::alloc(regs.cap_regs.as_ref(), regs.op_regs.as_ref())?;
+        let device_context_base_array = DeviceContextBaseAddressArray::new(scratchpad_buffers);
         let device_context_base_array = Mutex::new(device_context_base_array);
         let primary_event_ring = Mutex::new(EventRing::new()?);
         let command_ring = Mutex::new(CommandRing::default());
@@ -598,8 +589,7 @@ impl Controller {
     }
     fn init_primary_event_ring(&mut self) -> Result<()> {
         let eq = &mut self.primary_event_ring;
-        unsafe { self.regs.rt_regs.get_unchecked_mut() }
-            .init_irs(0, &mut eq.lock())
+        unsafe { self.regs.rt_regs.get_unchecked_mut() }.init_irs(0, &mut eq.lock())
     }
     fn init_command_ring(&mut self) {
         unsafe { self.regs.op_regs.get_unchecked_mut() }
@@ -607,15 +597,11 @@ impl Controller {
     }
     fn init_slots_and_contexts(&mut self) -> Result<()> {
         let num_slots = self.regs.cap_regs.as_ref().num_of_device_slots();
-        unsafe { self.regs.op_regs.get_unchecked_mut() }
-            .set_num_device_slots(num_slots)?;
+        unsafe { self.regs.op_regs.get_unchecked_mut() }.set_num_device_slots(num_slots)?;
         unsafe { self.regs.op_regs.get_unchecked_mut() }
             .set_dcbaa_ptr(&mut self.device_context_base_array.lock())
     }
-    async fn send_command(
-        &self,
-        cmd: GenericTrbEntry,
-    ) -> Result<GenericTrbEntry> {
+    async fn send_command(&self, cmd: GenericTrbEntry) -> Result<GenericTrbEntry> {
         let cmd_ptr = self.command_ring.lock().push(cmd)?;
         self.notify_xhc();
         EventFuture::new_for_trb(&self.primary_event_ring, cmd_ptr).await
@@ -623,14 +609,46 @@ impl Controller {
     fn notify_xhc(&self) {
         self.regs.doorbell_regs[0].notify(0, 0);
     }
-    fn set_output_context_for_slot(
-        &self,
-        slot: u8,
-        output_context: Pin<Box<OutputContext>>,
-    ) {
+    pub fn notify_ep(&self, slot: u8, dci: usize) -> Result<()> {
+        let db = self
+            .regs
+            .doorbell_regs
+            .get(slot as usize)
+            .ok_or("invalid slot")?;
+        let dci = u8::try_from(dci).or(Err("invalid dci"))?;
+        db.notify(dci, 0);
+        Ok(())
+    }
+    fn set_output_context_for_slot(&self, slot: u8, output_context: Pin<Box<OutputContext>>) {
         self.device_context_base_array
             .lock()
             .set_output_context(slot, output_context);
+    }
+    async fn request_descriptor<T: Sized>(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        desc_type: UsbDescriptorType,
+        desc_index: u8,
+        lang_id: u16,
+        buf: Pin<&mut [T]>,
+    ) -> Result<()> {
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                SetupStageTrb::REQ_TYPE_DIR_DEVICE_TO_HOST,
+                SetupStageTrb::REQ_GET_DESCRIPTOR,
+                (desc_type as u16) << 8 | (desc_index as u16),
+                lang_id,
+                (buf.len() * size_of::<T>()) as u16,
+            )
+            .into(),
+        )?;
+        let trb_ptr_waiting = ctrl_ep_ring.push(DataStageTrb::new_in(buf).into())?;
+        ctrl_ep_ring.push(StatusStageTrb::new_out().into())?;
+        self.notify_ep(slot, 1)?;
+        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
+            .await?
+            .transfer_result_ok()
     }
 }
 
@@ -669,8 +687,7 @@ impl EventRing {
         }
         let e = self.ring.as_ref().current();
         let eptr = self.ring.as_ref().current_ptr() as u64;
-        unsafe { self.ring.get_unchecked_mut() }
-            .advance_index_notoggle(self.cycle_state_ours)?;
+        unsafe { self.ring.get_unchecked_mut() }.advance_index_notoggle(self.cycle_state_ours)?;
         unsafe {
             let erdp = self.erdp.expect("erdp is not set");
             write_volatile(erdp, eptr | (*erdp & 0b1111));
@@ -735,8 +752,7 @@ impl EventRingSegmentTableEntry {
         let mut erst: IoBox<Self> = IoBox::new();
         {
             let erst = unsafe { erst.get_unchecked_mut() };
-            erst.ring_segment_base_address =
-                ring.as_ref() as *const TrbRing as u64;
+            erst.ring_segment_base_address = ring.as_ref() as *const TrbRing as u64;
             erst.ring_segment_size = ring
                 .as_ref()
                 .num_trbs()
@@ -919,6 +935,24 @@ impl GenericTrbEntry {
     }
 }
 
+impl From<SetupStageTrb> for GenericTrbEntry {
+    fn from(trb: SetupStageTrb) -> Self {
+        unsafe { transmute(trb) }
+    }
+}
+
+impl From<DataStageTrb> for GenericTrbEntry {
+    fn from(trb: DataStageTrb) -> Self {
+        unsafe { transmute(trb) }
+    }
+}
+
+impl From<StatusStageTrb> for GenericTrbEntry {
+    fn from(trb: StatusStageTrb) -> Self {
+        unsafe { transmute(trb) }
+    }
+}
+
 pub struct CommandRing {
     ring: IoBox<TrbRing>,
     cycle_state_ours: bool,
@@ -1011,8 +1045,7 @@ struct PortSc {
 }
 impl PortSc {
     fn new(bar: &BarMem64, cap_regs: &CapabilityRegisters) -> Self {
-        let base = unsafe { bar.addr().add(cap_regs.caplength()).add(0x400) }
-            as *mut u32;
+        let base = unsafe { bar.addr().add(cap_regs.caplength()).add(0x400) } as *mut u32;
         let num_ports = cap_regs.num_of_ports();
         let mut entries = Vec::new();
         for port in 1..=num_ports {
@@ -1179,10 +1212,7 @@ impl EventFuture {
 }
 impl Future for EventFuture {
     type Output = Result<GenericTrbEntry>;
-    fn poll(
-        self: Pin<&mut Self>,
-        _: &mut Context,
-    ) -> Poll<Result<GenericTrbEntry>> {
+    fn poll(self: Pin<&mut Self>, _: &mut Context) -> Poll<Result<GenericTrbEntry>> {
         let mut_self = unsafe { self.get_unchecked_mut() };
         if let Some(trb) = mut_self.wait_on.trbs.lock().pop_front() {
             Poll::Ready(Ok(trb))
@@ -1222,24 +1252,15 @@ pub struct InputContext {
 }
 const _: () = assert!(size_of::<InputContext>() <= 4096);
 impl InputContext {
-    fn set_ep_ctx(
-        self: &mut Pin<&mut Self>,
-        dci: usize,
-        ep_ctx: EndpointContext,
-    ) -> Result<()> {
-        unsafe {
-            self.as_mut().get_unchecked_mut().device_ctx.ep_ctx[dci - 1] =
-                ep_ctx
-        }
+    fn set_ep_ctx(self: &mut Pin<&mut Self>, dci: usize, ep_ctx: EndpointContext) -> Result<()> {
+        unsafe { self.as_mut().get_unchecked_mut().device_ctx.ep_ctx[dci - 1] = ep_ctx }
         Ok(())
     }
     fn set_input_ctrl_ctx(
         self: &mut Pin<&mut Self>,
         input_ctrl_ctx: InputControlContext,
     ) -> Result<()> {
-        unsafe {
-            self.as_mut().get_unchecked_mut().input_ctrl_ctx = input_ctrl_ctx
-        }
+        unsafe { self.as_mut().get_unchecked_mut().input_ctrl_ctx = input_ctrl_ctx }
         Ok(())
     }
     fn set_port_speed(self: &mut Pin<&mut Self>, psi: UsbMode) -> Result<()> {
@@ -1247,10 +1268,7 @@ impl InputContext {
             .device_ctx
             .set_port_speed(psi)
     }
-    fn set_root_hub_port_number(
-        self: &mut Pin<&mut Self>,
-        port: usize,
-    ) -> Result<()> {
+    fn set_root_hub_port_number(self: &mut Pin<&mut Self>, port: usize) -> Result<()> {
         unsafe { self.as_mut().get_unchecked_mut() }
             .device_ctx
             .set_root_hub_port_number(port)
@@ -1291,6 +1309,135 @@ impl UsbMode {
             Self::HighSpeed => 3,
             Self::SuperSpeed => 4,
             Self::Unknown(psi) => psi,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(u8)]
+#[non_exhaustive]
+#[allow(unused)]
+#[derive(PartialEq, Eq)]
+pub enum UsbDescriptorType {
+    Device = 1,
+    Config = 2,
+    String = 3,
+    Interface = 4,
+    Endpoint = 5,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+#[allow(unused)]
+#[repr(packed)]
+pub struct UsbDeviceDescriptor {
+    pub desc_length: u8,
+    pub desc_type: u8,
+    pub vertion: u16,
+    pub device_class: u8,
+    pub device_subclass: u8,
+    pub device_protocol: u8,
+    pub max_packet_size: u8,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub device_version: u16,
+    pub manufacture_idx: u8,
+    pub product_idx: u8,
+    pub serial_idx: u8,
+    pub num_of_config: u8,
+}
+
+const _: () = assert!(size_of::<UsbDeviceDescriptor>() == 18);
+unsafe impl IntoPinnedMutableSlice for UsbDeviceDescriptor {}
+
+#[derive(Copy, Clone)]
+#[repr(C, align(16))]
+pub struct SetupStageTrb {
+    request_type: u8,
+    request: u8,
+    value: u16,
+    index: u16,
+    length: u16,
+    option: u32,
+    control: u32,
+}
+
+const _: () = assert!(size_of::<SetupStageTrb>() == 16);
+impl SetupStageTrb {
+    pub const REQ_TYPE_DIR_DEVICE_TO_HOST: u8 = 1 << 7;
+    pub const REQ_TYPE_DIR_HOST_TO_DEVICE: u8 = 0 << 7;
+
+    pub const REQ_TYPE_TYPE_CLASS: u8 = 1 << 5;
+    pub const REQ_TYPE_VENDOR: u8 = 2 << 5;
+
+    pub const REQ_TYPE_TO_DEVICE: u8 = 0;
+    pub const REQ_TYPE_TO_INTERFACE: u8 = 1;
+
+    pub const REQ_GET_REPORT: u8 = 1;
+    pub const REQ_GET_DESCRIPTOR: u8 = 6;
+    pub const REQ_GET_CONFIGURATION: u8 = 9;
+    pub const REQ_GET_INTERFACE: u8 = 11;
+    pub const REQ_GET_PROTOCOL: u8 = 0x0b;
+
+    pub fn new(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> Self {
+        const TRT_NO_DATA_STAGE: u32 = 0;
+        const TRT_OUT_DATA_STAGE: u32 = 2;
+        const TRT_IN_DATA_STAGE: u32 = 3;
+        let transfer_type = if length == 0 {
+            TRT_NO_DATA_STAGE
+        } else if request & Self::REQ_TYPE_DIR_DEVICE_TO_HOST != 0 {
+            TRT_IN_DATA_STAGE
+        } else {
+            TRT_OUT_DATA_STAGE
+        };
+        Self {
+            request_type,
+            request,
+            value,
+            index,
+            length,
+            option: 8,
+            control: transfer_type << 16
+                | (TrbType::SetupStage as u32) << 10
+                | GenericTrbEntry::CTRL_BIT_IMMEDIATE_DATA,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+#[repr(C, align(16))]
+pub struct DataStageTrb {
+    buf: u64,
+    option: u32,
+    control: u32,
+}
+const _: () = assert!(size_of::<DataStageTrb>() == 16);
+impl DataStageTrb {
+    pub fn new_in<T: Sized>(buf: Pin<&mut [T]>) -> Self {
+        Self {
+            buf: buf.as_ptr() as u64,
+            option: (buf.len() * size_of::<T>()) as u32,
+            control: (TrbType::DataStage as u32) << 10
+                | GenericTrbEntry::CTRL_BIT_DATA_DIR_IN
+                | GenericTrbEntry::CTRL_BIT_INTERRUPT_ON_COMPLETION
+                | GenericTrbEntry::CTRL_BIT_INTERRUPT_ON_SHORT_PACKET,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+#[repr(C, align(16))]
+pub struct StatusStageTrb {
+    reserved: u64,
+    option: u32,
+    control: u32,
+}
+const _: () = assert!(size_of::<StatusStageTrb>() == 16);
+impl StatusStageTrb {
+    fn new_out() -> Self {
+        Self {
+            reserved: 0,
+            option: 0,
+            control: (TrbType::StatusStage as u32) << 10,
         }
     }
 }
