@@ -5,6 +5,7 @@ use crate::bits::extract_bits;
 use crate::executor::spawn_global;
 use crate::executor::yield_execution;
 use crate::info;
+use crate::keyboard::KeyEvent;
 use crate::mmio::IoBox;
 use crate::mmio::Mmio;
 use crate::mutex::Mutex;
@@ -18,6 +19,7 @@ use crate::slice::Sliceable;
 use crate::volatile::Volatile;
 use crate::x86::busy_loop_hint;
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::rc::Weak;
@@ -245,9 +247,23 @@ impl PciXhciDriver {
                     UsbHidProtocol::BootProtocol as u8,
                 )
                 .await?;
+                let mut prev_pressed = BTreeSet::new();
                 loop {
-                    let report = Self::request_hid_report(&xhc, slot, &mut ctrl_ep_ring).await?;
-                    info!("hxci: hid report : {report:?}");
+                    let pressed = {
+                        let report =
+                            Self::request_hid_report(&xhc, slot, &mut ctrl_ep_ring).await?;
+                        BTreeSet::from_iter(report.into_iter().skip(2).filter(|id| *id != 0))
+                    };
+                    let diff = pressed.symmetric_difference(&prev_pressed);
+                    for id in diff {
+                        let e = KeyEvent::from_usb_key_id(*id);
+                        if pressed.contains(id) {
+                            info!("usb_keyboard: key down: {e:?}");
+                        } else {
+                            info!("usb_keyboard: key up: {e:?}");
+                        }
+                    }
+                    prev_pressed = pressed;
                 }
             }
         }
