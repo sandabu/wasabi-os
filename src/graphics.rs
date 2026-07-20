@@ -186,6 +186,9 @@ impl<T: Bitmap> BitmapTextWriter<T> {
             cursor_y: 0,
         }
     }
+    pub fn buf(&self) -> &T {
+        &self.vram
+    }
 }
 
 impl<T: Bitmap> fmt::Write for BitmapTextWriter<T> {
